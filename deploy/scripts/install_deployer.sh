@@ -13,6 +13,7 @@ script_directory="$(dirname "${full_script_path}")"
 SCRIPT_NAME="$(basename "$0")"
 
 # Load the refactored framework (replaces legacy script_helpers.sh)
+source "${script_directory}/log_utils.sh"
 source "${script_directory}/deploy_utils.sh"
 source "${script_directory}/helpers/script_helpers_v2.sh"
 
