@@ -53,7 +53,7 @@ log_info "Refactoring Phase 4: Advanced Features Complete"
 
 # Load each module with error handling
 for module in "${modules_to_load[@]}"; do
-    module_path="${script_directory}/helpers/refactored/${module}"
+    module_path="${script_directory}/refactored/${module}"
 
     if [[ -f "$module_path" ]]; then
         # shellcheck source=/dev/null
