@@ -898,11 +898,32 @@ function _display_unhandled_errors() {
     echo ""
 }
 
+function validate_terraform_configuration_structure() {
+    local config_file="$1"
+
+    log_debug "Validating Terraform configuration structure: $config_file"
+
+    # Basic structure validation - check for common Terraform patterns
+    if ! grep -q "=" "$config_file" 2>/dev/null; then
+        log_warn "Configuration file appears to be empty or malformed: $config_file"
+        return $VALIDATION_WARNING
+    fi
+
+    # Check for suspicious content that might indicate corruption
+    if grep -q "^Binary file" "$config_file" 2>/dev/null; then
+        log_error "Configuration file appears to be binary: $config_file"
+        return $VALIDATION_ERROR
+    fi
+
+    log_debug "Terraform configuration structure validation passed"
+    return $SUCCESS
+}
+
 # =============================================================================
 # MODULE INITIALIZATION
 # =============================================================================
 
 log_info "Terraform operations module loaded successfully"
-log_debug "Available functions: analyze_terraform_plan, process_terraform_errors, replace_terraform_resource, terraform_apply_with_recovery"
+log_debug "Available functions: analyze_terraform_plan, process_terraform_errors, replace_terraform_resource, terraform_apply_with_recovery, validate_terraform_configuration_structure"
 log_debug "Backward compatibility functions available for legacy scripts"
 log_debug "Terraform timeouts - Plan: ${TF_PLAN_TIMEOUT}s, Apply: ${TF_APPLY_TIMEOUT}s, Import: ${TF_IMPORT_TIMEOUT}s"

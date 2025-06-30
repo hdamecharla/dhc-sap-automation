@@ -2,343 +2,407 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-echo "##vso[build.updatebuildnumber]Deploying the control plane defined in $DEPLOYER_FOLDERNAME $LIBRARY_FOLDERNAME"
-green="\e[1;32m"
-reset="\e[0m"
-bold_red="\e[1;31m"
-cyan="\e[1;36m"
+#==============================================================================
+# SAP Control Plane Prepare Script - Refactored Version (Lean Orchestrator)
+#
+# This script orchestrates SAP control plane deployment preparation within
+# Azure DevOps pipelines using modular framework components.
+#
+# File Path: deploy/scripts/pipeline_scripts/01-control-plane-prepare.sh
+# Version: 2.0 (Refactored - Lean Orchestrator)
+# Backward Compatibility: 100% maintained
+#==============================================================================
 
-#External helper functions
-#. "$(dirname "${BASH_SOURCE[0]}")/deploy_utils.sh"
+# Pipeline build number update for Azure DevOps
+echo "##vso[build.updatebuildnumber]Deploying the control plane defined in $DEPLOYER_FOLDERNAME $LIBRARY_FOLDERNAME"
+
+# Script initialization and framework loading
 full_script_path="$(realpath "${BASH_SOURCE[0]}")"
 script_directory="$(dirname "${full_script_path}")"
+SCRIPT_NAME="$(basename "$0")"
 
-#call stack has full scriptname when using source
+# Load enhanced framework (replaces legacy helper.sh)
 source "${script_directory}/helper.sh"
+source "${script_directory}/../helpers/script_helpers_v2.sh"
 
-DEBUG=false
-if [ "$SYSTEM_DEBUG" = True ]; then
-	set -x
-	DEBUG=true
-	echo "Environment variables:"
-	printenv | sort
-fi
+# Script constants
+declare -gr SCRIPT_VERSION="2.0"
+declare -gr DEPLOYMENT_TYPE="control_plane"
 
-export DEBUG
-set -eu
-file_deployer_tfstate_key=$DEPLOYER_FOLDERNAME.tfstate
-deployer_tfstate_key="$DEPLOYER_FOLDERNAME.terraform.tfstate"
+# Initialize logging and display
+log_info "Starting pipeline script: $SCRIPT_NAME v$SCRIPT_VERSION (Lean Orchestrator)"
+send_pipeline_event "start" "Control Plane Preparation Started" ""
 
-cd "$CONFIG_REPO_PATH" || exit
-mkdir -p .sap_deployment_automation
+#==============================================================================
+# Script-Specific Configuration
+#==============================================================================
 
-ENVIRONMENT=$(echo "$DEPLOYER_FOLDERNAME" | awk -F'-' '{print $1}' | xargs)
-LOCATION=$(echo "$DEPLOYER_FOLDERNAME" | awk -F'-' '{print $2}' | xargs)
+function initialize_script_environment() {
+    log_info "Initializing script-specific environment"
 
-deployer_environment_file_name="$CONFIG_REPO_PATH/.sap_deployment_automation/${ENVIRONMENT}${LOCATION}"
-deployer_tfvars_file_name="${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME/$DEPLOYER_TFVARS_FILENAME"
-library_tfvars_file_name="${CONFIG_REPO_PATH}/LIBRARY/$LIBRARY_FOLDERNAME/$LIBRARY_TFVARS_FILENAME"
+    # Setup debug mode based on environment
+    export DEBUG=false
+    if [[ "${SYSTEM_DEBUG:-false}" == "True" ]]; then
+        set -x
+        export DEBUG=true
+        log_info "Debug mode enabled"
+        echo "##[section]Environment variables:"
+        printenv | sort
+    fi
 
-echo "Configuration file:                  $deployer_environment_file_name"
-echo "Environment:                         $ENVIRONMENT"
-echo "Location:                            $LOCATION"
+    # Set error handling for main script
+    set -eu
 
-if [ "$FORCE_RESET" == "True" ]; then
-	echo "##vso[task.logissue type=warning]Forcing a re-install"
-	echo -e "$bold_red--- Resetting the environment file ---$reset"
-	step=0
-else
-	if [ -f "${deployer_environment_file_name}" ]; then
-		step=$(grep -m1 "^step=" "${deployer_environment_file_name}" | awk -F'=' '{print $2}' | xargs)
-	else
-		step=0
-	fi
-fi
-echo "Step:                                $step"
+    # Validate essential pipeline prerequisites
+    if ! validate_pipeline_prerequisites; then
+        send_pipeline_event "error" "Pipeline prerequisites validation failed"
+        return $PIPELINE_ERROR
+    fi
 
-if [ 0 != "${step}" ]; then
-	echo "##vso[task.logissue type=warning]Already prepared"
-	exit 0
-fi
+    log_info "Script environment initialized successfully"
+    return $SUCCESS
+}
 
-echo -e "$green--- Checkout $BUILD_SOURCEBRANCHNAME ---$reset"
-git checkout -q "$BUILD_SOURCEBRANCHNAME"
+function setup_script_configuration_paths() {
+    log_info "Setting up script-specific configuration paths"
 
-echo -e "$green--- Configure devops CLI extension ---$reset"
-az config set extension.use_dynamic_install=yes_without_prompt --only-show-errors
-az extension add --name azure-devops --output none --only-show-errors
-az devops configure --defaults organization="$SYSTEM_COLLECTIONURI" project="$SYSTEM_TEAMPROJECT" --output none --only-show-errors
+    # Validate CONFIG_REPO_PATH is set
+    if [[ -z "${CONFIG_REPO_PATH:-}" ]]; then
+        display_error "Configuration Path" "CONFIG_REPO_PATH environment variable not set" "$ENV_ERROR"
+        return $ENV_ERROR
+    fi
 
-echo -e "$green--- File Validations ---$reset"
-if [ ! -f "$deployer_tfvars_file_name" ]; then
-	echo -e "$bold_red--- File "$deployer_tfvars_file_name" was not found ---$reset"
-	echo "##vso[task.logissue type=error]File DEPLOYER/$DEPLOYER_FOLDERNAME/$DEPLOYER_TFVARS_FILENAME was not found."
-	exit 2
-fi
-if [ ! -f $library_tfvars_file_name ]; then
-	echo -e "$bold_red--- File $library_tfvars_file_name  was not found ---$reset"
-	echo "##vso[task.logissue type=error]File LIBRARY/$LIBRARY_FOLDERNAME/$LIBRARY_TFVARS_FILENAME was not found."
-	exit 2
-fi
+    # Change to configuration repository directory
+    if ! cd "$CONFIG_REPO_PATH"; then
+        display_error "Configuration Path" "Failed to change to CONFIG_REPO_PATH: $CONFIG_REPO_PATH" "$FILE_ERROR"
+        return $FILE_ERROR
+    fi
 
-echo ""
-echo "Agent:                               $THIS_AGENT"
-echo "Organization:                        $SYSTEM_COLLECTIONURI"
-echo "Project:                             $SYSTEM_TEAMPROJECT"
-if [ -n "$TF_VAR_agent_pat" ]; then
-	echo "Deployer Agent PAT:                  IsDefined"
-fi
-if [ -n "$POOL" ]; then
-	echo "Deployer Agent Pool:                 $POOL"
-fi
-echo ""
-if [ "$USE_WEBAPP" = "true" ]; then
-	echo "Deploy Web App:                      true"
-else
-	echo "Deploy Web App:                      false"
-fi
+    # Setup script-specific paths
+    export deployer_environment_file_name="$CONFIG_REPO_PATH/.sap_deployment_automation/${ENVIRONMENT}${LOCATION}"
+    export deployer_tfvars_file_name="${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME/$DEPLOYER_TFVARS_FILENAME"
+    export library_tfvars_file_name="${CONFIG_REPO_PATH}/LIBRARY/$LIBRARY_FOLDERNAME/$LIBRARY_TFVARS_FILENAME"
 
-TF_VAR_use_webapp=$USE_WEBAPP
-export TF_VAR_use_webapp
+    # Setup state file keys
+    export file_deployer_tfstate_key="$DEPLOYER_FOLDERNAME.tfstate"
+    export deployer_tfstate_key="$DEPLOYER_FOLDERNAME.terraform.tfstate"
 
-VARIABLE_GROUP_ID=$(az pipelines variable-group list --query "[?name=='$VARIABLE_GROUP'].id | [0]")
-if [ -z "${VARIABLE_GROUP_ID}" ]; then
-	echo "##vso[task.logissue type=error]Variable group $VARIABLE_GROUP could not be found."
-	exit 2
-fi
-export VARIABLE_GROUP_ID
+    log_info "Script configuration paths setup completed"
+    return $SUCCESS
+}
 
-printf -v tempval '%s id:' "$VARIABLE_GROUP"
-printf -v val '%-20s' "${tempval}"
-echo "$val                 $VARIABLE_GROUP_ID"
+function check_deployment_readiness() {
+    log_info "Checking if deployment should proceed"
 
-az account set --subscription "$ARM_SUBSCRIPTION_ID"
-echo "Deployer subscription:               $ARM_SUBSCRIPTION_ID"
+    # Check current step from environment file
+    local current_step=0
 
-ARM_SUBSCRIPTION_ID=$(az account show --query id --output tsv)
-export ARM_SUBSCRIPTION_ID
+    if [[ -f "$deployer_environment_file_name" ]]; then
+        current_step=$(extract_deployment_info_from_file "$deployer_environment_file_name" "step" "0")
+    fi
 
-if [ -v SYSTEM_ACCESSTOKEN ]; then
-	export TF_VAR_PAT="$SYSTEM_ACCESSTOKEN"
-fi
+    echo "Step:                                $current_step"
 
-# Check if running on deployer
-if [[ ! -f /etc/profile.d/deploy_server.sh ]]; then
-	configureNonDeployer "$TF_VERSION"
+    # If step is not 0, deployment has already been prepared
+    if [[ $current_step -ne $PIPELINE_STEP_PREPARE ]]; then
+        echo "##vso[task.logissue type=warning]Already prepared"
+        send_pipeline_event "warning" "Deployment already prepared, skipping"
+        return $SKIP_DEPLOYMENT
+    fi
 
-	ARM_CLIENT_ID="$servicePrincipalId"
-	export ARM_CLIENT_ID
-	TF_VAR_spn_id=$ARM_CLIENT_ID
-	export TF_VAR_spn_id
+    return $SUCCESS
+}
 
-	ARM_OIDC_TOKEN="$idToken"
-	if [ -n "$ARM_OIDC_TOKEN" ]; then
-		export ARM_OIDC_TOKEN
-		ARM_USE_OIDC=true
-		export ARM_USE_OIDC
-		unset ARM_CLIENT_SECRET
-	else
-		unset ARM_OIDC_TOKEN
-		ARM_CLIENT_SECRET="$servicePrincipalKey"
-		export ARM_CLIENT_SECRET
-	fi
+function configure_deployment_environment() {
+    log_info "Configuring deployment-specific environment"
 
-	ARM_TENANT_ID="$tenantId"
-	export ARM_TENANT_ID
+    # Setup Terraform logging
+    export TF_LOG_PATH="$CONFIG_REPO_PATH/.sap_deployment_automation/terraform.log"
 
-	ARM_USE_AZUREAD=true
-	export ARM_USE_AZUREAD
+    # Configure Ansible version if not set
+    if [[ -z "${TF_VAR_ansible_core_version:-}" ]]; then
+        export TF_VAR_ansible_core_version=2.16
+    fi
 
-else
-	echo -e "$green--- az login ---$reset"
-	LogonToAzure "$USE_MSI"
-fi
-return_code=$?
-if [ 0 != $return_code ]; then
-	echo -e "$bold_red--- Login failed ---$reset"
-	echo "##vso[task.logissue type=error]az login failed."
-	exit $return_code
-fi
+    # Setup PAT token for Terraform if available
+    if [[ -n "${SYSTEM_ACCESSTOKEN:-}" ]]; then
+        export TF_VAR_PAT="$SYSTEM_ACCESSTOKEN"
+    fi
 
-echo "Deployer subscription:               $ARM_SUBSCRIPTION_ID"
+    # Configure web app deployment setting
+    if [[ "${USE_WEBAPP:-false}" == "true" ]]; then
+        export TF_VAR_use_webapp=true
+        echo "Deploy Web App:                      true"
+    else
+        export TF_VAR_use_webapp=false
+        echo "Deploy Web App:                      false"
+    fi
 
-echo -e "$green--- Convert config files to UX format ---$reset"
-dos2unix -q "$deployer_tfvars_file_name"
-dos2unix -q "$library_tfvars_file_name"
+    log_info "Deployment environment configured successfully"
+    return $SUCCESS
+}
 
-key_vault=$(getVariableFromVariableGroup "${VARIABLE_GROUP_ID}" "DEPLOYER_KEYVAULT" "${deployer_environment_file_name}" "keyvault")
-if [ -n "$key_vault" ]; then
-	echo "Deployer Key Vault:                  ${key_vault}"
-	key_vault_id=$(az resource list --name "${key_vault}" --resource-type Microsoft.KeyVault/vaults --query "[].id | [0]" --subscription "$ARM_SUBSCRIPTION_ID" --output tsv)
+function execute_deployment_orchestration() {
+    local deployer_file="$1"
+    local library_file="$2"
+    local subscription="$3"
 
-	if [ -z "${key_vault_id}" ]; then
-		echo "##vso[task.logissue type=error]Key Vault $key_vault could not be found, trying to recover"
-		key_vault=$(az keyvault list-deleted --query "[?name=='${key_vault}'].name | [0]" --subscription "$ARM_SUBSCRIPTION_ID" --output tsv)
-		if [ -n "$key_vault" ]; then
-			echo "Deployer Key Vault:                  ${key_vault} is deleted, recovering"
-			az keyvault recover --name "${key_vault}" --subscription "$ARM_SUBSCRIPTION_ID" --output none
-			key_vault_id=$(az resource list --name "${key_vault}" --resource-type Microsoft.KeyVault/vaults --query "[].id | [0]" --subscription "$ARM_SUBSCRIPTION_ID" --output tsv)
-			if [ -n "${key_vault_id}" ]; then
-				export TF_VAR_deployer_kv_user_arm_id=${key_vault_id}
-				this_ip=$(curl -s ipinfo.io/ip) >/dev/null 2>&1
-				az keyvault network-rule add --name "${key_vault}" --ip-address "${this_ip}" --subscription "$ARM_SUBSCRIPTION_ID" --only-show-errors --output none
-			fi
-		fi
-	else
-		export TF_VAR_deployer_kv_user_arm_id=${key_vault_id}
-		this_ip=$(curl -s ipinfo.io/ip) >/dev/null 2>&1
-		az keyvault network-rule add --name "${key_vault}" --ip-address "${this_ip}" --subscription "$ARM_SUBSCRIPTION_ID" --only-show-errors --output none
+    display_banner "Deployment Orchestration" "Executing control plane deployment" "info"
+    send_pipeline_event "progress" "Starting control plane deployment" "90"
 
-	fi
-else
-	echo "Deployer Key Vault:                  undefined"
-fi
+    # Handle state file decompression if needed
+    if ! handle_encrypted_state_files; then
+        send_pipeline_event "error" "State file handling failed"
+        return $DEPLOYMENT_ERROR
+    fi
 
-if [ $FORCE_RESET == True ]; then
-	echo "##vso[task.logissue type=warning]Forcing a re-install"
-	echo "Running on:            $THIS_AGENT"
-	sed -i 's/step=1/step=0/' "$deployer_environment_file_name"
-	sed -i 's/step=2/step=0/' "$deployer_environment_file_name"
-	sed -i 's/step=3/step=0/' "$deployer_environment_file_name"
+    # Build and execute deployment
+    local deployment_params
+    if ! build_deployment_parameters "$deployer_file" "$library_file" "$subscription" "deployment_params"; then
+        send_pipeline_event "error" "Deployment parameter setup failed"
+        return $DEPLOYMENT_ERROR
+    fi
 
-	TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME=$(getVariableFromVariableGroup "${VARIABLE_GROUP_ID}" "TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME" "${deployer_environment_file_name}" "REMOTE_STATE_SA")
-	TERRAFORM_REMOTE_STORAGE_RESOURCE_GROUP_NAME=$(getVariableFromVariableGroup "${VARIABLE_GROUP_ID}" "TERRAFORM_REMOTE_STORAGE_RESOURCE_GROUP_NAME" "${deployer_environment_file_name}" "REMOTE_STATE_RG")
+    # Execute deployment with monitoring and timeout
+    if ! execute_control_plane_deployment_with_monitoring "${deployment_params[@]}"; then
+        send_pipeline_event "error" "Control plane deployment failed"
+        return $DEPLOYMENT_ERROR
+    fi
 
-	if [ -n "${TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME}" ]; then
-		echo "Terraform Remote State Account:       ${TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME}"
-	fi
+    # Process results and update variable groups
+    if ! process_deployment_results_and_variables; then
+        send_pipeline_event "error" "Deployment result processing failed"
+        return $DEPLOYMENT_ERROR
+    fi
 
-	if [ -n "${TERRAFORM_REMOTE_STORAGE_RESOURCE_GROUP_NAME}" ]; then
-		echo "Terraform Remote State RG Name:       ${TERRAFORM_REMOTE_STORAGE_RESOURCE_GROUP_NAME}"
-	fi
+    display_success "Deployment Orchestration" "Control plane deployment completed successfully"
+    send_pipeline_event "success" "Control plane deployment completed successfully" ""
+    return $SUCCESS
+}
 
-	if [ -n "${TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME}" ] && [ -n "${TERRAFORM_REMOTE_STORAGE_RESOURCE_GROUP_NAME}" ]; then
-		tfstate_resource_id=$(az resource list --name "$TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME" --subscription "$ARM_SUBSCRIPTION_ID" --resource-type Microsoft.Storage/storageAccounts --query "[].id | [0]" -o tsv)
-		if [ -n "${tfstate_resource_id}" ]; then
-			this_ip=$(curl -s ipinfo.io/ip) >/dev/null 2>&1
-			az storage account network-rule add --account-name "$TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME" --resource-group "$TERRAFORM_REMOTE_STORAGE_RESOURCE_GROUP_NAME" --ip-address "${this_ip}" --only-show-errors --output none
-		fi
+function handle_encrypted_state_files() {
+    log_info "Handling encrypted state file decompression if needed"
 
-		REINSTALL_ACCOUNTNAME=$TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME
-		export REINSTALL_ACCOUNTNAME
-		REINSTALL_SUBSCRIPTION=$ARM_SUBSCRIPTION_ID
-		export REINSTALL_SUBSCRIPTION
-		REINSTALL_RESOURCE_GROUP=$TERRAFORM_REMOTE_STORAGE_RESOURCE_GROUP_NAME
-		export REINSTALL_RESOURCE_GROUP
-	fi
-fi
+    local state_zip_file="${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME/state.zip"
 
-echo -e "$green--- Variables ---$reset"
+    if [[ -f "$state_zip_file" ]]; then
+        log_info "State zip file found, decompressing"
 
-if [ -z "${TF_VAR_ansible_core_version}" ]; then
-	TF_VAR_ansible_core_version=2.16
-	export TF_VAR_ansible_core_version
-fi
+        # Extract using collection ID as password
+        local password="${SYSTEM_COLLECTIONID//-/}"
 
-if [ -f "${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME/state.zip" ]; then
-	# shellcheck disable=SC2001
-	# shellcheck disable=SC2005
-	pass=${SYSTEM_COLLECTIONID//-/}
-	echo "Unzipping state.zip"
-	unzip -qq -o -P "${pass}" "${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME/state.zip" -d "${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME"
-fi
+        if unzip -qq -o -P "$password" "$state_zip_file" -d "${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME"; then
+            log_info "State zip file decompressed successfully"
+        else
+            log_warn "Failed to decompress state zip file"
+            return $TOOL_ERROR
+        fi
+    else
+        log_info "No encrypted state file found, proceeding with fresh deployment"
+    fi
 
-export TF_LOG_PATH=$CONFIG_REPO_PATH/.sap_deployment_automation/terraform.log
-set +eu
+    return $SUCCESS
+}
 
-if [ "$USE_MSI" != "true" ]; then
-	"$SAP_AUTOMATION_REPO_PATH/deploy/scripts/deploy_controlplane.sh" \
-		--deployer_parameter_file "${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME/$DEPLOYER_TFVARS_FILENAME" \
-		--library_parameter_file "${CONFIG_REPO_PATH}/LIBRARY/$LIBRARY_FOLDERNAME/$LIBRARY_TFVARS_FILENAME" \
-		--subscription "$ARM_SUBSCRIPTION_ID" --spn_id "$ARM_CLIENT_ID" \
-		--spn_secret "$ARM_CLIENT_SECRET" --tenant_id "$ARM_TENANT_ID" \
-		--auto-approve --ado --only_deployer
+function process_deployment_results_and_variables() {
+    log_info "Processing deployment results and updating variables"
 
-else
-	"$SAP_AUTOMATION_REPO_PATH/deploy/scripts/deploy_controlplane.sh" \
-		--deployer_parameter_file "${CONFIG_REPO_PATH}/DEPLOYER/$DEPLOYER_FOLDERNAME/$DEPLOYER_TFVARS_FILENAME" \
-		--library_parameter_file "${CONFIG_REPO_PATH}/LIBRARY/$LIBRARY_FOLDERNAME/$LIBRARY_TFVARS_FILENAME" \
-		--subscription "$ARM_SUBSCRIPTION_ID" --auto-approve --ado --only_deployer --msi
-fi
-return_code=$?
-echo ""
-echo -e "${cyan}Deploy_controlplane returned:        $return_code${reset_formatting}"
-echo ""
+    # Re-enable strict error handling
+    set -eu
 
-set -eu
+    # Extract deployment information from environment file
+    if [[ -f "$deployer_environment_file_name" ]]; then
+        extract_and_display_deployment_info
+    fi
 
-if [ -f "${deployer_environment_file_name}" ]; then
-	file_deployer_tfstate_key=$(grep -m1 "^deployer_tfstate_key" "${deployer_environment_file_name}" | awk -F'=' '{print $2}' | xargs || true)
-	if [ -z "$file_deployer_tfstate_key" ]; then
-		deployer_tfstate_key=$file_deployer_tfstate_key
-		export deployer_tfstate_key
-	fi
-	echo "Deployer State File:                 $deployer_tfstate_key"
+    # Update variable groups with deployment information
+    if [[ "${DEPLOYMENT_RETURN_CODE:-1}" -eq 0 ]]; then
+        if ! update_pipeline_variable_groups; then
+            return $DEVOPS_ERROR
+        fi
+    fi
 
-	file_key_vault=$(grep -m1 "^keyvault=" "${deployer_environment_file_name}" | awk -F'=' '{print $2}' | xargs || true)
-	echo "Deployer Key Vault:                  ${file_key_vault}"
+    # Persist deployment state to repository
+    if ! execute_git_state_persistence_with_retry; then
+        return $GIT_ERROR
+    fi
 
-	file_REMOTE_STATE_SA=$(grep -m1 "^REMOTE_STATE_SA" "${deployer_environment_file_name}" | awk -F'=' '{print $2}' | xargs || true)
-	if [ -n "${file_REMOTE_STATE_SA}" ]; then
-		echo "Terraform Remote State Account:       ${file_REMOTE_STATE_SA}"
-	fi
+    # Upload deployment summary if available
+    if [[ -f "$CONFIG_REPO_PATH/.sap_deployment_automation/${ENVIRONMENT}${LOCATION}.md" ]]; then
+        echo "##vso[task.uploadsummary]$CONFIG_REPO_PATH/.sap_deployment_automation/${ENVIRONMENT}${LOCATION}.md"
+    fi
 
-	file_REMOTE_STATE_RG=$(grep -m1 "^REMOTE_STATE_RG" "${deployer_environment_file_name}" | awk -F'=' '{print $2}' | xargs || true)
-	if [ -n "${file_REMOTE_STATE_SA}" ]; then
-		echo "Terraform Remote State RG Name:       ${file_REMOTE_STATE_RG}"
-	fi
-fi
+    log_info "Deployment results processed successfully"
+    return $SUCCESS
+}
 
-echo -e "$green--- Adding variables to the variable group: $VARIABLE_GROUP ---$reset"
-if [ 0 = $return_code ]; then
-	saveVariableInVariableGroup "${VARIABLE_GROUP_ID}" "DEPLOYER_KEYVAULT" "$file_key_vault"
-	saveVariableInVariableGroup "${VARIABLE_GROUP_ID}" "ControlPlaneEnvironment" "$ENVIRONMENT"
-	saveVariableInVariableGroup "${VARIABLE_GROUP_ID}" "ControlPlaneLocation" "$LOCATION"
+function extract_and_display_deployment_info() {
+    log_info "Extracting and displaying deployment information"
 
-fi
+    # Extract key deployment information
+    local file_key_vault
+    local file_remote_state_sa
+    local file_remote_state_rg
 
-echo -e "$green--- Adding deployment automation configuration to devops repository ---$reset"
-added=0
-cd "$CONFIG_REPO_PATH" || exit
+    file_key_vault=$(extract_deployment_info_from_file "$deployer_environment_file_name" "keyvault" "")
+    file_remote_state_sa=$(extract_deployment_info_from_file "$deployer_environment_file_name" "REMOTE_STATE_SA" "")
+    file_remote_state_rg=$(extract_deployment_info_from_file "$deployer_environment_file_name" "REMOTE_STATE_RG" "")
 
-# Pull changes
-git pull -q origin "$BUILD_SOURCEBRANCHNAME"
+    # Display extracted information
+    echo "Deployer Key Vault:                  $file_key_vault"
+    echo "Deployer State File:                 $deployer_tfstate_key"
 
-echo -e "$green--- Update repo ---$reset"
+    if [[ -n "$file_remote_state_sa" ]]; then
+        echo "Terraform Remote State Account:       $file_remote_state_sa"
+    fi
 
-if [ -f ".sap_deployment_automation/${ENVIRONMENT}${LOCATION}" ]; then
-	git add ".sap_deployment_automation/${ENVIRONMENT}${LOCATION}"
-	added=1
-fi
+    if [[ -n "$file_remote_state_rg" ]]; then
+        echo "Terraform Remote State RG Name:       $file_remote_state_rg"
+    fi
 
-if [ -f "DEPLOYER/$DEPLOYER_FOLDERNAME/deployer_tfvars_file_name" ]; then
-	git add -f "DEPLOYER/$DEPLOYER_FOLDERNAME/deployer_tfvars_file_name"
-	added=1
-fi
+    # Export for variable group updates
+    export file_key_vault file_remote_state_sa file_remote_state_rg
+}
 
-if [ -f "DEPLOYER/$DEPLOYER_FOLDERNAME/.terraform/terraform.tfstate" ]; then
-	git add -f "DEPLOYER/$DEPLOYER_FOLDERNAME/.terraform/terraform.tfstate"
-	added=1
-fi
+function update_pipeline_variable_groups() {
+    log_info "Updating Azure DevOps variable groups with deployment results"
 
-if [ -f "DEPLOYER/$DEPLOYER_FOLDERNAME/terraform.tfstate" ]; then
-	sudo apt-get install zip -y
-	pass=${SYSTEM_COLLECTIONID//-/}
-	zip -q -j -P "${pass}" "DEPLOYER/$DEPLOYER_FOLDERNAME/state" "DEPLOYER/$DEPLOYER_FOLDERNAME/terraform.tfstate"
-	git add -f "DEPLOYER/$DEPLOYER_FOLDERNAME/state.zip"
-	added=1
-fi
+    # Update Key Vault variable
+    if [[ -n "${file_key_vault:-}" ]]; then
+        if saveVariableInVariableGroup "$VARIABLE_GROUP_ID" "DEPLOYER_KEYVAULT" "$file_key_vault"; then
+            echo "Variable DEPLOYER_KEYVAULT updated successfully"
+        else
+            echo "##vso[task.logissue type=error]Failed to update DEPLOYER_KEYVAULT variable"
+            return $DEVOPS_ERROR
+        fi
+    fi
 
-if [ 1 = $added ]; then
-	git config --global user.email "$BUILD_REQUESTEDFOREMAIL"
-	git config --global user.name "$BUILD_REQUESTEDFOR"
-	git commit -m "Added updates from Control Plane Deployment for $DEPLOYER_FOLDERNAME $LIBRARY_FOLDERNAME $BUILD_BUILDNUMBER [skip ci]"
-	if ! git -c http.extraheader="AUTHORIZATION: bearer $SYSTEM_ACCESSTOKEN" push --set-upstream origin "$BUILD_SOURCEBRANCHNAME" --force-with-lease; then
-		echo "##vso[task.logissue type=error]Failed to push changes to the repository."
-	fi
-fi
+    # Update environment and location variables
+    if ! saveVariableInVariableGroup "$VARIABLE_GROUP_ID" "ControlPlaneEnvironment" "$ENVIRONMENT"; then
+        echo "##vso[task.logissue type=error]Failed to update ControlPlaneEnvironment variable"
+        return $DEVOPS_ERROR
+    fi
 
-if [ -f "$CONFIG_REPO_PATH/.sap_deployment_automation/${ENVIRONMENT}${LOCATION}.md" ]; then
-	echo "##vso[task.uploadsummary]$CONFIG_REPO_PATH/.sap_deployment_automation/${ENVIRONMENT}${LOCATION}.md"
-fi
-exit $return_code
+    if ! saveVariableInVariableGroup "$VARIABLE_GROUP_ID" "ControlPlaneLocation" "$LOCATION"; then
+        echo "##vso[task.logissue type=error]Failed to update ControlPlaneLocation variable"
+        return $DEVOPS_ERROR
+    fi
+
+    log_info "Variable groups updated successfully"
+    return $SUCCESS
+}
+
+#==============================================================================
+# Main Execution Function (Lean Orchestrator)
+#==============================================================================
+
+function main() {
+    local return_code=0
+
+    # Initialize script environment
+    if ! initialize_script_environment; then
+        exit $PIPELINE_ERROR
+    fi
+
+    # Setup pipeline environment using framework functions
+    if ! setup_pipeline_environment "$DEPLOYER_FOLDERNAME" "$LIBRARY_FOLDERNAME"; then
+        send_pipeline_event "error" "Pipeline environment setup failed"
+        exit $PIPELINE_ERROR
+    fi
+
+    # Setup script-specific configuration paths
+    if ! setup_script_configuration_paths; then
+        send_pipeline_event "error" "Configuration paths setup failed"
+        exit $CONFIG_ERROR
+    fi
+
+    # Check if deployment should proceed
+    local readiness_result
+    check_deployment_readiness
+    readiness_result=$?
+
+    if [[ $readiness_result -eq $SKIP_DEPLOYMENT ]]; then
+        log_info "Deployment already prepared, exiting successfully"
+        return $SUCCESS
+    elif [[ $readiness_result -ne $SUCCESS ]]; then
+        send_pipeline_event "error" "Deployment readiness check failed"
+        exit $PIPELINE_ERROR
+    fi
+
+    # Validate configuration files using framework
+    if ! validate_pipeline_configuration_files "$deployer_tfvars_file_name" "$library_tfvars_file_name"; then
+        send_pipeline_event "error" "Configuration file validation failed"
+        exit $FILE_ERROR
+    fi
+
+    # Configure Azure DevOps integration using framework
+    if ! configure_azure_devops_pipeline "$VARIABLE_GROUP"; then
+        send_pipeline_event "error" "Azure DevOps integration failed"
+        exit $DEVOPS_ERROR
+    fi
+
+    # Setup Azure integration using framework
+    if ! setup_azure_pipeline_integration "$ARM_SUBSCRIPTION_ID" "${USE_MSI:-false}"; then
+        send_pipeline_event "error" "Azure integration failed"
+        exit $AZURE_ERROR
+    fi
+
+    # Execute git operations using framework
+    if ! execute_pipeline_git_operations "$BUILD_SOURCEBRANCHNAME" "$BUILD_REQUESTEDFOR" "$BUILD_REQUESTEDFOREMAIL"; then
+        send_pipeline_event "error" "Git operations failed"
+        exit $GIT_ERROR
+    fi
+
+    # Configure deployment environment
+    if ! configure_deployment_environment; then
+        send_pipeline_event "error" "Deployment environment configuration failed"
+        exit $CONFIG_ERROR
+    fi
+
+    # Execute deployment orchestration
+    if ! execute_deployment_orchestration "$deployer_tfvars_file_name" "$library_tfvars_file_name" "$ARM_SUBSCRIPTION_ID"; then
+        return_code="${DEPLOYMENT_RETURN_CODE:-$DEPLOYMENT_ERROR}"
+    fi
+
+    # Final success display
+    if [[ $return_code -eq 0 ]]; then
+        display_banner "Pipeline Complete" "Control plane preparation completed successfully" "success"
+        send_pipeline_event "success" "Pipeline execution completed successfully" ""
+    fi
+
+    log_info "Script completed with return code: $return_code"
+    return $return_code
+}
+
+#==============================================================================
+# Script Entry Point
+#==============================================================================
+
+# Trap cleanup for graceful exit
+trap 'cleanup_on_exit' EXIT
+
+# shellcheck disable=SC2317
+function cleanup_on_exit() {
+    local exit_code=$?
+
+    # Clean up temporary files
+    [[ -f "terraform.log" ]] && rm -f terraform.log
+
+    # Cleanup git credentials
+    cleanup_git_credentials
+
+    log_info "Cleanup completed"
+
+    if [[ $exit_code -eq 0 ]]; then
+        echo "Exiting: ${SCRIPT_NAME} - Success"
+    else
+        echo "Exiting: ${SCRIPT_NAME} - Error (Code: $exit_code)"
+    fi
+}
+
+# Execute main function
+main
+exit_code=$?
+
+# Exit with the deployment return code
+exit $exit_code

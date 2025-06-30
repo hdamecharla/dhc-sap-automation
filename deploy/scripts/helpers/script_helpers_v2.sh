@@ -46,6 +46,8 @@ modules_to_load=(
     "configuration_management.sh"
     "monitoring_integration.sh"
     "documentation_generation.sh"
+    "pipeline_standards.sh"
+    "git_operations.sh"
 )
 
 log_info "Loading SAP Deployment Automation Framework - Script Helpers v2.0"
@@ -707,9 +709,48 @@ export -f get_config_value set_config_value initialize_configuration_system
 export -f send_metric send_alert configure_monitoring
 export -f generate_complete_documentation extract_function_docs
 
-log_info "SAP Deployment Automation Framework - Script Helpers v2.0 initialized"
-log_info "Backward compatibility: 100% maintained"
-log_info "New features: Enhanced validation, logging integration, modular architecture, Terraform operations, Azure integration, testing framework, migration utilities, performance optimization, configuration management, monitoring integration, documentation generation"
-log_debug "Use 'check_refactoring_status' to verify module health"
-log_debug "Use 'test_all_modules' to run comprehensive tests"
-log_debug "Use 'generate_complete_documentation' to create documentation"
+# Export pipeline-specific functions
+export -f is_pipeline_environment is_deployer_environment get_pipeline_agent_info
+export -f validate_pipeline_prerequisites send_monitoring_event send_metric
+export -f setup_pipeline_environment extract_deployment_context
+export -f configure_azure_devops_pipeline setup_azure_devops_cli manage_variable_groups
+export -f configure_pipeline_parameters build_deployment_parameters
+export -f execute_control_plane_deployment_with_monitoring send_pipeline_event log_structured_event
+
+# Export validation functions
+export -f validate_pipeline_configuration_files validate_deployer_configuration_file
+export -f validate_library_configuration_file convert_files_to_unix_format
+export -f validate_terraform_configuration_structure
+
+# Export Azure integration functions
+export -f setup_azure_pipeline_integration configure_azure_subscription_context
+export -f authenticate_azure_pipeline_context configure_pipeline_authentication
+export -f configureNonDeployer setup_key_vault_integration setup_keyvault_access
+export -f attempt_keyvault_recovery configure_keyvault_network_access
+export -f handle_force_reset_scenario setup_remote_state_for_reset configure_remote_state_access
+
+# Export git operations functions
+export -f execute_pipeline_git_operations execute_git_state_persistence_with_retry
+export -f execute_git_state_persistence create_encrypted_state_zip commit_and_push_changes
+export -f resolve_git_conflicts safe_git_pull safe_git_push execute_secure_git_checkout
+export -f setup_git_credentials cleanup_git_credentials validate_git_repository
+export -f create_git_backup restore_git_backup cleanup_git_backups
+
+# Export configuration management functions
+export -f getVariableFromVariableGroup saveVariableInVariableGroup
+export -f extract_deployment_info_from_file create_deployment_summary
+export -f validate_configuration_repository setup_configuration_directory_structure
+export -f normalize_configuration_paths backup_configuration_file restore_configuration_file
+export -f validate_configuration_file_format load_environment_configuration save_environment_configuration
+
+# Export pipeline constants
+export PIPELINE_ERROR DEVOPS_ERROR GIT_ERROR DEPLOYMENT_ERROR SKIP_DEPLOYMENT
+export PIPELINE_STEP_PREPARE PIPELINE_STEP_DEPLOY PIPELINE_STEP_COMPLETE
+export PIPELINE_TIMEOUT MAX_PIPELINE_RETRIES PIPELINE_RETRY_DELAY
+export ADO_SECTION ADO_WARNING ADO_ERROR ADO_PROGRESS ADO_SUMMARY
+
+# Export git constants
+export GIT_MAX_RETRIES GIT_RETRY_DELAY GIT_TIMEOUT
+
+log_info "Pipeline framework extensions loaded successfully"
+log_debug "Pipeline support: Azure DevOps integration, git operations, deployment orchestration, configuration management"

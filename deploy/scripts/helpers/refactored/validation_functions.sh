@@ -3,6 +3,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# shellcheck disable=SC1090,SC1091,SC2034,SC2154
 # Validation Functions Module - Centralized Parameter and Environment Validation
 # This module consolidates all validation logic from script_helpers.sh into standardized,
 # reusable functions with proper error handling and logging integration
@@ -785,10 +786,144 @@ function _get_tool_installation_help() {
     echo ""
 }
 
+# Additional functions for deploy/scripts/helpers/refactored/validation_functions.sh
+
+#==============================================================================
+# Pipeline-Specific Configuration File Validation
+#==============================================================================
+
+function validate_pipeline_configuration_files() {
+    local deployer_file="$1"
+    local library_file="$2"
+
+    display_banner "File Validation" "Validating configuration files" "info"
+    send_pipeline_event "progress" "Validating configuration files" "30"
+
+    local validation_errors=0
+
+    # Validate deployer configuration file
+    if ! validate_deployer_configuration_file "$deployer_file"; then
+        ((validation_errors++))
+    fi
+
+    # Validate library configuration file
+    if ! validate_library_configuration_file "$library_file"; then
+        ((validation_errors++))
+    fi
+
+    # Convert files to Unix format for compatibility
+    if ! convert_files_to_unix_format "$deployer_file" "$library_file"; then
+        ((validation_errors++))
+    fi
+
+    if [[ $validation_errors -gt 0 ]]; then
+        display_error "File Validation" "Configuration file validation failed" "$FILE_ERROR"
+        send_pipeline_event "error" "Configuration file validation failed"
+        return $FILE_ERROR
+    fi
+
+    display_success "File Validation" "All configuration files validated successfully"
+    send_pipeline_event "progress" "Configuration files validated" "40"
+    return $SUCCESS
+}
+
+function validate_deployer_configuration_file() {
+    local file="$1"
+
+    log_info "Validating deployer configuration file: $file"
+
+    if [[ ! -f "$file" ]]; then
+        display_error "Missing File" "Deployer configuration file not found: $file" "$FILE_ERROR"
+        echo "##vso[task.logissue type=error]File DEPLOYER/$DEPLOYER_FOLDERNAME/$DEPLOYER_TFVARS_FILENAME was not found."
+        return $FILE_ERROR
+    fi
+
+    # Validate file is readable
+    if [[ ! -r "$file" ]]; then
+        display_error "File Access" "Deployer configuration file not readable: $file" "$FILE_ERROR"
+        return $FILE_ERROR
+    fi
+
+    # Validate file content structure (basic check)
+    if ! validate_terraform_configuration_structure "$file"; then
+        display_error "File Content" "Deployer configuration file structure invalid: $file" "$VALIDATION_ERROR"
+        return $VALIDATION_ERROR
+    fi
+
+    log_info "Deployer configuration file validated successfully"
+    return $SUCCESS
+}
+
+function validate_library_configuration_file() {
+    local file="$1"
+
+    log_info "Validating library configuration file: $file"
+
+    if [[ ! -f "$file" ]]; then
+        display_error "Missing File" "Library configuration file not found: $file" "$FILE_ERROR"
+        echo "##vso[task.logissue type=error]File LIBRARY/$LIBRARY_FOLDERNAME/$LIBRARY_TFVARS_FILENAME was not found."
+        return $FILE_ERROR
+    fi
+
+    # Validate file is readable
+    if [[ ! -r "$file" ]]; then
+        display_error "File Access" "Library configuration file not readable: $file" "$FILE_ERROR"
+        return $FILE_ERROR
+    fi
+
+    # Validate file content structure (basic check)
+    if ! validate_terraform_configuration_structure "$file"; then
+        display_error "File Content" "Library configuration file structure invalid: $file" "$VALIDATION_ERROR"
+        return $VALIDATION_ERROR
+    fi
+
+    log_info "Library configuration file validated successfully"
+    return $SUCCESS
+}
+
+function convert_files_to_unix_format() {
+    local deployer_file="$1"
+    local library_file="$2"
+
+    log_info "Converting configuration files to Unix format"
+
+    # Convert deployer file
+    if ! dos2unix -q "$deployer_file" 2>/dev/null; then
+        log_warn "Failed to convert deployer file to Unix format: $deployer_file"
+    fi
+
+    # Convert library file
+    if ! dos2unix -q "$library_file" 2>/dev/null; then
+        log_warn "Failed to convert library file to Unix format: $library_file"
+    fi
+
+    log_info "File format conversion completed"
+    return $SUCCESS
+}
+
+function validate_terraform_configuration_structure() {
+    local config_file="$1"
+
+    log_debug "Validating Terraform configuration structure: $config_file"
+
+    # Basic structure validation - check for common Terraform patterns
+    if ! grep -q "=" "$config_file" 2>/dev/null; then
+        log_warn "Configuration file appears to be empty or malformed: $config_file"
+        return $VALIDATION_WARNING
+    fi
+
+    # Check for suspicious content that might indicate corruption
+    if grep -q "^Binary file" "$config_file" 2>/dev/null; then
+        log_error "Configuration file appears to be binary: $config_file"
+        return $VALIDATION_ERROR
+    fi
+
+    log_debug "Terraform configuration structure validation passed"
+    return $SUCCESS
+}
 # =============================================================================
 # MODULE INITIALIZATION
 # =============================================================================
 
 log_info "Validation functions module loaded successfully"
-log_debug "Available functions: validate_environment, validate_parameter_file, validate_system_dependencies, validate_azure_keyvault"
 log_debug "Backward compatibility functions available for legacy scripts"

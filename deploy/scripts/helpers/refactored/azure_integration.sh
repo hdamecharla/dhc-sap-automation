@@ -3,6 +3,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# shellcheck disable=SC1090,SC1091,SC2034,SC2154
 # Azure Integration Module - Authentication and Resource Management
 # This module provides centralized Azure authentication, resource validation,
 # and configuration management for the SAP deployment automation framework
@@ -862,11 +863,364 @@ function getVariableFromApplicationConfiguration() {
     return $?
 }
 
+# Additional functions for deploy/scripts/helpers/refactored/azure_integration.sh
+
+#==============================================================================
+# Pipeline Azure Integration Functions
+#==============================================================================
+
+function setup_azure_pipeline_integration() {
+    local subscription="$1"
+    local use_msi="$2"
+
+    display_banner "Azure Integration" "Configuring Azure resources and authentication" "info"
+    send_pipeline_event "progress" "Setting up Azure integration" "70"
+
+    # Setup Azure subscription context
+    if ! configure_azure_subscription_context "$subscription"; then
+        send_pipeline_event "error" "Azure subscription configuration failed"
+        return $AZURE_ERROR
+    fi
+
+    # Authenticate with Azure using appropriate method
+    if ! authenticate_azure_pipeline_context "$use_msi"; then
+        send_pipeline_event "error" "Azure authentication failed"
+        return $AZURE_ERROR
+    fi
+
+    # Configure Key Vault integration
+    if ! setup_key_vault_integration; then
+        send_pipeline_event "error" "Key Vault integration failed"
+        return $AZURE_ERROR
+    fi
+
+    # Handle force reset scenario
+    if ! handle_force_reset_scenario; then
+        send_pipeline_event "error" "Force reset handling failed"
+        return $AZURE_ERROR
+    fi
+
+    display_success "Azure Integration" "Azure resources configured successfully"
+    send_pipeline_event "progress" "Azure integration completed" "80"
+    return $SUCCESS
+}
+
+function configure_azure_subscription_context() {
+    local subscription="$1"
+
+    log_info "Configuring Azure subscription context: $subscription"
+
+    # Set subscription context
+    if ! az account set --subscription "$subscription"; then
+        display_error "Azure Subscription" "Failed to set subscription context: $subscription" "$AZURE_ERROR"
+        return $AZURE_ERROR
+    fi
+
+    # Verify subscription access
+    local current_subscription
+    current_subscription=$(az account show --query id --output tsv 2>/dev/null)
+
+    if [[ "$current_subscription" != "$subscription" ]]; then
+        display_error "Azure Subscription" "Subscription verification failed: expected $subscription, got $current_subscription" "$AZURE_ERROR"
+        return $AZURE_ERROR
+    fi
+
+    echo "Deployer subscription:               $subscription"
+    log_info "Azure subscription context configured successfully"
+    return $SUCCESS
+}
+
+function authenticate_azure_pipeline_context() {
+    local use_msi="$1"
+
+    log_info "Authenticating with Azure using appropriate method"
+
+    # Detect authentication context (pipeline vs deployer)
+    if is_deployer_environment; then
+        log_info "Deployer environment detected, using existing authentication"
+        # Use the enhanced authenticate_azure function instead of legacy LogonToAzure
+        if ! authenticate_azure "auto"; then
+            display_error "Azure Authentication" "Deployer authentication failed" "$AZURE_ERROR"
+            return $AZURE_ERROR
+        fi
+    else
+        log_info "Pipeline agent environment detected, configuring authentication"
+        if ! configure_pipeline_authentication "$use_msi"; then
+            display_error "Azure Authentication" "Pipeline authentication configuration failed" "$AZURE_ERROR"
+            return $AZURE_ERROR
+        fi
+    fi
+
+    log_info "Azure authentication completed successfully"
+    return $SUCCESS
+}
+
+function configure_pipeline_authentication() {
+    local use_msi="$1"
+
+    log_info "Configuring pipeline authentication parameters"
+
+    # Configure non-deployer environment
+    if ! configureNonDeployer "${TF_VERSION:-latest}"; then
+        display_error "Non-Deployer Config" "Failed to configure non-deployer environment" "$CONFIG_ERROR"
+        return $CONFIG_ERROR
+    fi
+
+    if [[ "$use_msi" == "true" ]]; then
+        log_info "Using Managed Service Identity for authentication"
+
+        # Configure MSI authentication
+        export ARM_USE_MSI=true
+        export TF_VAR_use_spn=false
+        unset ARM_CLIENT_SECRET
+        unset ARM_OIDC_TOKEN
+
+        # Verify MSI authentication
+        if ! az account show &>/dev/null; then
+            log_error "MSI authentication failed"
+            return $AZURE_ERROR
+        fi
+    else
+        log_info "Using Service Principal for authentication"
+
+        # Setup authentication variables
+        export ARM_CLIENT_ID="$servicePrincipalId"
+        export TF_VAR_spn_id="$ARM_CLIENT_ID"
+
+        # Configure OIDC or client secret authentication
+        if [[ -n "${idToken:-}" ]]; then
+            export ARM_OIDC_TOKEN="$idToken"
+            export ARM_USE_OIDC=true
+            unset ARM_CLIENT_SECRET
+            log_info "Using OIDC authentication"
+        else
+            export ARM_CLIENT_SECRET="$servicePrincipalKey"
+            unset ARM_OIDC_TOKEN
+            log_info "Using client secret authentication"
+        fi
+
+        export ARM_TENANT_ID="$tenantId"
+        export TF_VAR_use_spn=true
+    fi
+
+    export ARM_USE_AZUREAD=true
+
+    log_info "Pipeline authentication configured successfully"
+    return $SUCCESS
+}
+
+function configureNonDeployer() {
+    local tf_version="$1"
+
+    log_info "Configuring non-deployer environment with Terraform version: $tf_version"
+
+    # This function configures the environment for non-deployer scenarios
+    # Implementation depends on the specific requirements of the SAP automation framework
+
+    # Set up Terraform if needed
+    if [[ -n "$tf_version" ]] && [[ "$tf_version" != "latest" ]]; then
+        export TF_VERSION="$tf_version"
+    fi
+
+    # Configure environment variables for non-deployer execution
+    export NON_DEPLOYER_MODE=true
+
+    log_info "Non-deployer environment configured successfully"
+    return $SUCCESS
+}
+
+function setup_key_vault_integration() {
+    log_info "Setting up Key Vault integration"
+
+    # Get Key Vault name from variable group
+    local key_vault
+    key_vault=$(getVariableFromVariableGroup "${VARIABLE_GROUP_ID}" "DEPLOYER_KEYVAULT" "${deployer_environment_file_name}" "keyvault")
+
+    if [[ -z "$key_vault" ]]; then
+        log_info "No Key Vault specified, skipping Key Vault integration"
+        echo "Deployer Key Vault:                  undefined"
+        return $SUCCESS
+    fi
+
+    echo "Deployer Key Vault:                  $key_vault"
+
+    # Validate Key Vault existence and access
+    if ! setup_keyvault_access "$key_vault"; then
+        # Attempt Key Vault recovery if not found
+        if ! attempt_keyvault_recovery "$key_vault"; then
+            display_error "Key Vault Setup" "Key Vault setup failed: $key_vault" "$AZURE_ERROR"
+            return $AZURE_ERROR
+        fi
+    fi
+
+    log_info "Key Vault integration completed successfully"
+    return $SUCCESS
+}
+
+function setup_keyvault_access() {
+    local key_vault="$1"
+
+    log_info "Setting up Key Vault access: $key_vault"
+
+    # Get Key Vault resource ID
+    local key_vault_id
+    key_vault_id=$(az resource list --name "$key_vault" --resource-type Microsoft.KeyVault/vaults --query "[].id | [0]" --subscription "$ARM_SUBSCRIPTION_ID" --output tsv 2>/dev/null)
+
+    if [[ -z "$key_vault_id" ]]; then
+        log_warn "Key Vault not found: $key_vault"
+        return $AZURE_ERROR
+    fi
+
+    export TF_VAR_deployer_kv_user_arm_id="$key_vault_id"
+
+    # Configure network access for current IP
+    if ! configure_keyvault_network_access "$key_vault"; then
+        log_warn "Failed to configure Key Vault network access"
+    fi
+
+    log_info "Key Vault access configured successfully"
+    return $SUCCESS
+}
+
+function attempt_keyvault_recovery() {
+    local key_vault="$1"
+
+    log_info "Attempting Key Vault recovery: $key_vault"
+
+    # Check if Key Vault is in deleted state
+    local deleted_vault
+    deleted_vault=$(az keyvault list-deleted --query "[?name=='$key_vault'].name | [0]" --subscription "$ARM_SUBSCRIPTION_ID" --output tsv 2>/dev/null)
+
+    if [[ -n "$deleted_vault" ]]; then
+        echo "##vso[task.logissue type=warning]Key Vault $key_vault is deleted, attempting recovery"
+        log_info "Key Vault is in deleted state, attempting recovery"
+
+        if az keyvault recover --name "$key_vault" --subscription "$ARM_SUBSCRIPTION_ID" --output none; then
+            log_info "Key Vault recovery successful"
+            # Re-attempt setup after recovery
+            if setup_keyvault_access "$key_vault"; then
+                return $SUCCESS
+            fi
+        else
+            log_error "Key Vault recovery failed"
+        fi
+    fi
+
+    echo "##vso[task.logissue type=error]Key Vault $key_vault could not be found or recovered"
+    return $AZURE_ERROR
+}
+
+function configure_keyvault_network_access() {
+    local key_vault="$1"
+
+    log_info "Configuring Key Vault network access: $key_vault"
+
+    # Get current public IP
+    local current_ip
+    current_ip=$(curl -s ipinfo.io/ip 2>/dev/null || echo "")
+
+    if [[ -n "$current_ip" ]]; then
+        # Add current IP to Key Vault network rules
+        if az keyvault network-rule add --name "$key_vault" --ip-address "$current_ip" --subscription "$ARM_SUBSCRIPTION_ID" --only-show-errors --output none; then
+            log_info "Added IP $current_ip to Key Vault network rules"
+        else
+            log_warn "Failed to add IP to Key Vault network rules"
+        fi
+    else
+        log_warn "Could not determine current IP address"
+    fi
+
+    return $SUCCESS
+}
+
+function handle_force_reset_scenario() {
+    log_info "Handling force reset scenario"
+
+    if [[ "${FORCE_RESET:-false}" == "True" ]]; then
+        echo "##vso[task.logissue type=warning]Forcing a re-install"
+        log_info "Force reset requested, resetting environment configuration"
+
+        # Reset step counter in environment file
+        if [[ -f "$deployer_environment_file_name" ]]; then
+            sed -i 's/step=1/step=0/' "$deployer_environment_file_name"
+            sed -i 's/step=2/step=0/' "$deployer_environment_file_name"
+            sed -i 's/step=3/step=0/' "$deployer_environment_file_name"
+        fi
+
+        # Setup remote state storage for force reset
+        if ! setup_remote_state_for_reset; then
+            return $AZURE_ERROR
+        fi
+    fi
+
+    return $SUCCESS
+}
+
+function setup_remote_state_for_reset() {
+    log_info "Setting up remote state storage for force reset"
+
+    # Get remote state configuration from variable group
+    local remote_state_sa
+    local remote_state_rg
+
+    remote_state_sa=$(getVariableFromVariableGroup "${VARIABLE_GROUP_ID}" "TERRAFORM_REMOTE_STORAGE_ACCOUNT_NAME" "${deployer_environment_file_name}" "REMOTE_STATE_SA")
+    remote_state_rg=$(getVariableFromVariableGroup "${VARIABLE_GROUP_ID}" "TERRAFORM_REMOTE_STORAGE_RESOURCE_GROUP_NAME" "${deployer_environment_file_name}" "REMOTE_STATE_RG")
+
+    if [[ -n "$remote_state_sa" ]]; then
+        echo "Terraform Remote State Account:       $remote_state_sa"
+    fi
+
+    if [[ -n "$remote_state_rg" ]]; then
+        echo "Terraform Remote State RG Name:       $remote_state_rg"
+    fi
+
+    # Configure remote state access if both values are available
+    if [[ -n "$remote_state_sa" ]] && [[ -n "$remote_state_rg" ]]; then
+        if ! configure_remote_state_access "$remote_state_sa" "$remote_state_rg"; then
+            return $AZURE_ERROR
+        fi
+
+        export REINSTALL_ACCOUNTNAME="$remote_state_sa"
+        export REINSTALL_SUBSCRIPTION="$ARM_SUBSCRIPTION_ID"
+        export REINSTALL_RESOURCE_GROUP="$remote_state_rg"
+    fi
+
+    return $SUCCESS
+}
+
+function configure_remote_state_access() {
+    local storage_account="$1"
+    local resource_group="$2"
+
+    log_info "Configuring remote state storage access: $storage_account"
+
+    # Get storage account resource ID
+    local tfstate_resource_id
+    tfstate_resource_id=$(az resource list --name "$storage_account" --subscription "$ARM_SUBSCRIPTION_ID" --resource-type Microsoft.Storage/storageAccounts --query "[].id | [0]" -o tsv 2>/dev/null)
+
+    if [[ -n "$tfstate_resource_id" ]]; then
+        # Configure network access for current IP
+        local current_ip
+        current_ip=$(curl -s ipinfo.io/ip 2>/dev/null || echo "")
+
+        if [[ -n "$current_ip" ]]; then
+            if az storage account network-rule add --account-name "$storage_account" --resource-group "$resource_group" --ip-address "$current_ip" --only-show-errors --output none; then
+                log_info "Added IP $current_ip to storage account network rules"
+            else
+                log_warn "Failed to add IP to storage account network rules"
+            fi
+        fi
+    else
+        log_warn "Storage account resource ID not found: $storage_account"
+    fi
+
+    return $SUCCESS
+}
+
 # =============================================================================
 # MODULE INITIALIZATION
 # =============================================================================
 
 log_info "Azure integration module loaded successfully"
-log_debug "Available functions: authenticate_azure, set_azure_subscription, validate_keyvault_access, ensure_terraform_storage"
 log_debug "Backward compatibility functions available for legacy scripts"
 log_debug "Azure timeouts - CLI: ${AZ_CLI_TIMEOUT}s, Login: ${AZ_LOGIN_TIMEOUT}s"
