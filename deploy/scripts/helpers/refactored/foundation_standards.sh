@@ -23,6 +23,7 @@ declare -gr TERRAFORM_ERROR=20
 declare -gr AZURE_ERROR=21
 declare -gr FILE_ERROR=30
 declare -gr NETWORK_ERROR=31
+declare -gr NOT_FOUND=32
 
 # =============================================================================
 # MODULE METADATA
