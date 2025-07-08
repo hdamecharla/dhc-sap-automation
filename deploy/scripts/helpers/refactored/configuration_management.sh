@@ -953,51 +953,179 @@ function _apply_environment_config() {
 function getVariableFromVariableGroup() {
     local variable_group_id="$1"
     local variable_name="$2"
-    local config_file="$3"
-    local config_key="$4"
+    local environment_file_name="$3"
+    local environment_variable_name="$4"
+    local variable_value=""
+    local sourced_from_file=0
 
+    # Suppress debug output during variable retrieval
+    local original_debug_state="$DEBUG"
+    DEBUG=false
+
+    # Validate input parameters
+    if [[ -z "$variable_group_id" || -z "$variable_name" ]]; then
+        log_error "getVariableFromVariableGroup: Missing required parameters"
+        DEBUG="$original_debug_state"
+        return $PARAM_ERROR
+    fi
+
+    # Attempt to get variable from Azure DevOps variable group
     log_debug "Getting variable '$variable_name' from variable group ID: $variable_group_id"
 
-    # First try to get from Azure DevOps variable group
-    local variable_value
-    if variable_value=$(az pipelines variable-group variable list --group-id "$variable_group_id" --query "[$variable_name].value" -o tsv 2>/dev/null); then
-        if [[ -n "$variable_value" ]] && [[ "$variable_value" != "null" ]]; then
-            echo "$variable_value"
-            return $SUCCESS
+    # Use a more robust query that handles null values properly
+    variable_value=$(az pipelines variable-group variable list \
+        --group-id "${variable_group_id}" \
+        --query "${variable_name}.value" \
+        --output tsv 2>/dev/null | grep -v "^DEBUG:" | grep -v "^INFO:" | head -n 1 | xargs || true)
+
+    # Check if variable was found and is not null/empty
+    if [[ -z "$variable_value" || "$variable_value" == "null" ]]; then
+        log_debug "Variable '$variable_name' not found in variable group or config file"
+
+        # Fallback to environment file if available
+        if [[ -n "$environment_file_name" && -f "$environment_file_name" && -n "$environment_variable_name" ]]; then
+            log_debug "Attempting to read from environment file: $environment_file_name"
+            variable_value=$(grep "^$environment_variable_name" "${environment_file_name}" 2>/dev/null | \
+                awk -F'=' '{print $2}' | tr -d ' \t\n\r\f"' || true)
+
+            if [[ -n "$variable_value" ]]; then
+                sourced_from_file=1
+                export sourced_from_file
+                log_debug "Variable '$variable_name' found in environment file with value: $variable_value"
+            fi
         fi
+    else
+        log_debug "Variable '$variable_name' found in variable group with value: $variable_value"
     fi
 
-    # Fallback to configuration file
-    if [[ -f "$config_file" ]] && [[ -n "$config_key" ]]; then
-        variable_value=$(grep -m1 "^${config_key}=" "$config_file" | awk -F'=' '{print $2}' | xargs 2>/dev/null || true)
-        if [[ -n "$variable_value" ]]; then
-            echo "$variable_value"
-            return $SUCCESS
-        fi
-    fi
+    # Restore debug state
+    DEBUG="$original_debug_state"
 
-    log_debug "Variable '$variable_name' not found in variable group or config file"
-    return $NOT_FOUND
+    # Return the value (may be empty)
+    echo "$variable_value"
+    return 0
 }
 
 function saveVariableInVariableGroup() {
     local variable_group_id="$1"
     local variable_name="$2"
     local variable_value="$3"
+    local return_code=0
+
+    # Validate input parameters
+    if [[ -z "$variable_group_id" || -z "$variable_name" ]]; then
+        log_error "saveVariableInVariableGroup: Missing required parameters"
+        return $PARAM_ERROR
+    fi
+
+    # Handle empty values appropriately
+    if [[ -z "$variable_value" ]]; then
+        log_warn "saveVariableInVariableGroup: Empty value provided for variable '$variable_name'"
+        return 0  # Don't save empty values
+    fi
 
     log_debug "Saving variable '$variable_name' to variable group ID: $variable_group_id"
 
-    # Save to Azure DevOps variable group
-    if az pipelines variable-group variable update --group-id "$variable_group_id" --name "$variable_name" --value "$variable_value" --output none 2>/dev/null; then
-        log_debug "Variable '$variable_name' saved to variable group successfully"
-        return $SUCCESS
-    elif az pipelines variable-group variable create --group-id "$variable_group_id" --name "$variable_name" --value "$variable_value" --output none 2>/dev/null; then
-        log_debug "Variable '$variable_name' created in variable group successfully"
-        return $SUCCESS
+    # Check if variable already exists
+    local existing_value
+    existing_value=$(az pipelines variable-group variable list \
+        --group-id "${variable_group_id}" \
+        --query "${variable_name}.value" \
+        --output tsv 2>/dev/null || true)
+
+    if [[ -n "$existing_value" && "$existing_value" != "null" ]]; then
+        # Update existing variable
+        log_debug "Updating existing variable '$variable_name'"
+        if az pipelines variable-group variable update \
+            --group-id "${variable_group_id}" \
+            --name "${variable_name}" \
+            --value "${variable_value}" \
+            --output none \
+            --only-show-errors 2>/dev/null; then
+            log_info "Variable '$variable_name' updated successfully"
+            return_code=0
+        else
+            log_error "Failed to update variable '$variable_name'"
+            return_code=$AZURE_ERROR
+        fi
     else
-        log_error "Failed to save variable '$variable_name' to variable group"
-        return $DEVOPS_ERROR
+        # Create new variable
+        log_debug "Creating new variable '$variable_name'"
+        if az pipelines variable-group variable create \
+            --group-id "${variable_group_id}" \
+            --name "${variable_name}" \
+            --value "${variable_value}" \
+            --output none \
+            --only-show-errors 2>/dev/null; then
+            log_info "Variable '$variable_name' created successfully"
+            return_code=0
+        else
+            log_error "Failed to create variable '$variable_name'"
+            return_code=$AZURE_ERROR
+        fi
     fi
+
+    return $return_code
+}
+
+# Enhanced variable validation function
+function validate_required_variables() {
+    local variable_group_id="$1"
+    local environment_file="$2"
+    local -a missing_variables=()
+    local -a required_vars=(
+        "ARM_SUBSCRIPTION_ID"
+        "ARM_CLIENT_ID"
+        "ARM_TENANT_ID"
+    )
+
+    log_info "Validating required variables for deployment"
+
+    for var in "${required_vars[@]}"; do
+        local value
+        value=$(getVariableFromVariableGroup "$variable_group_id" "$var" "$environment_file" "$var" || true)
+
+        if [[ -z "$value" ]]; then
+            missing_variables+=("$var")
+        fi
+    done
+
+    if [[ ${#missing_variables[@]} -gt 0 ]]; then
+        log_error "Missing required variables: ${missing_variables[*]}"
+        return $VALIDATION_ERROR
+    fi
+
+    log_info "All required variables validated successfully"
+    return 0
+}
+
+# Bootstrap-aware variable handling
+function get_variable_with_bootstrap_fallback() {
+    local variable_group_id="$1"
+    local variable_name="$2"
+    local environment_file="$3"
+    local environment_variable_name="$4"
+    local is_required_for_bootstrap="${5:-false}"
+
+    local value
+    value=$(getVariableFromVariableGroup "$variable_group_id" "$variable_name" "$environment_file" "$environment_variable_name" || true)
+
+    # If bootstrap deployment and variable is not required for bootstrap, return empty
+    if [[ "$IS_BOOTSTRAP_DEPLOYMENT" == "true" && "$is_required_for_bootstrap" != "true" ]]; then
+        if [[ -z "$value" ]]; then
+            log_debug "Bootstrap mode: '$variable_name' not required, returning empty"
+            return 0
+        fi
+    fi
+
+    # For non-bootstrap or required variables, validate presence
+    if [[ -z "$value" && "$is_required_for_bootstrap" == "true" ]]; then
+        log_error "Required variable '$variable_name' is missing"
+        return $VALIDATION_ERROR
+    fi
+
+    echo "$value"
+    return 0
 }
 
 #==============================================================================

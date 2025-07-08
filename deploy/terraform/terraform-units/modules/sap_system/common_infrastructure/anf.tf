@@ -8,6 +8,12 @@
 #######################################4#######################################8
 
 resource "azurerm_netapp_volume" "sapmnt" {
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      network_features
+    ]
+  }
   provider                             = azurerm.main
   count                                = var.NFS_provider == "ANF" ? (
                                            var.hana_ANF_volumes.use_existing_sapmnt_volume ? (
