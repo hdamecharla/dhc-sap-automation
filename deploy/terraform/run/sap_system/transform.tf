@@ -23,6 +23,7 @@ locals {
                                             disk_controller_type_database_tier = var.disk_controller_type_database_tier
                                             encryption_at_host_enabled         = var.encryption_at_host_enabled
                                             storage_account_replication_type   = var.storage_account_replication_type
+                                            swap_config_type                  = var.swap_config_type
                                          }
 
 

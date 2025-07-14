@@ -1656,3 +1656,19 @@ variable "sap_cal_product_name"                 {
                                                   description = "If defined, will use SAP CAL for system installation"
                                                   default     = ""
                                                 }
+
+#########################################################################################
+#                                                                                       #
+#  SWAP configuration variables                                                         #
+#                                                                                       #
+#########################################################################################
+
+variable "swap_config_type"                     {
+                                                  description = "Defines the swap configuration type, valid values are 'waagent' or 'cloud-init'"
+                                                  default     = "waagent"
+                                                  type        = string
+                                                  validation {
+                                                                condition     = contains(["waagent", "cloud-init"], var.swap_config_type)
+                                                                error_message = "The swap_config_type variable must be either 'waagent' or 'cloud-init'."
+                                                              }
+                                                }
