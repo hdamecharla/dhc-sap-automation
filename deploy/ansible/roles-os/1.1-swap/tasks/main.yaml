@@ -13,6 +13,11 @@
 #
 # -------------------------------------+---------------------------------------8
 
+- name:                                "1.1 Swap: - Debug swap configuration"
+  ansible.builtin.debug:
+    msg:
+      - "Swap configuration type       : {{ swap_config_type }},"
+
 - name:                                "1.1 Swap: - Ensure /mnt/resource directory exists"
   ansible.builtin.file:
     path:                              "/mnt/resource"
@@ -54,7 +59,9 @@
 
 - name:                                "1.1 Swap: - Debug target swap size"
   ansible.builtin.debug:
-    msg:                               "Target swap size: {{ target_swap_size_mb }}MB, Config type: {{ swap_config_type }}"
+    msg:
+      - "Target swap size              : {{ target_swap_size_mb }}MB,"
+      - "Swap configuration type       : {{ swap_config_type }}"
 
 # Route to appropriate configuration method
 - name:                                "1.1 Swap: - Configure swap using waagent"

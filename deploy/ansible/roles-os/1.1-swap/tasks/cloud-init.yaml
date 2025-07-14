@@ -57,4 +57,9 @@
     msg:                               "Swap status: {{ swap_status.stdout }}"
     verbosity:                         1
 
+- name:                                "1.1 Swap (cloud-init): - notify handlers if swap script was created"
+  when:                                swap_script_created.changed
+  ansible.builtin.meta:
+    flush_handlers:                    true
+  notify:                              "Swap reboot"
 ...
