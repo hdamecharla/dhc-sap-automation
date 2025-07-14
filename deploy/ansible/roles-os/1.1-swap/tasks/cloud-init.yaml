@@ -1,0 +1,61 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+---
+# -------------------------------------+---------------------------------------8
+#
+# Task: cloud-init-based swap configuration
+#
+# -------------------------------------+---------------------------------------8
+
+- name:                                "1.1 Swap (cloud-init): - Disable waagent swap to avoid conflicts"
+  ansible.builtin.lineinfile:
+    path:                              /etc/waagent.conf
+    regexp:                            "{{ item.regexp }}"
+    line:                              "{{ item.line }}"
+    backup:                            true
+    create:                            true
+  loop:
+    - { regexp: '^ResourceDisk\.Format=',         line: 'ResourceDisk.Format=n' }
+    - { regexp: '^ResourceDisk\.EnableSwap=',     line: 'ResourceDisk.EnableSwap=n' }
+    - { regexp: '^ResourceDisk\.SwapSizeMB=',     line: 'ResourceDisk.SwapSizeMB=0' }
+    - { regexp: '^Extensions\.WaitForCloudInit=', line: 'Extensions.WaitForCloudInit=y' }
+  notify:                              "Restart waagent"
+
+- name:                                "1.1 Swap (cloud-init): - Create cloud-init scripts directory"
+  ansible.builtin.file:
+    path:                              /var/lib/cloud/scripts/per-boot
+    state:                             directory
+    mode:                              '0755'
+
+- name:                                "1.1 Swap (cloud-init): - Create swap file script"
+  ansible.builtin.template:
+    src:                               create_swapfile.sh.j2
+    dest:                              /var/lib/cloud/scripts/per-boot/create_swapfile.sh
+    mode:                              '0755'
+    force:                             true
+  register:                            swap_script_created
+
+- name:                                "1.1 Swap (cloud-init): - Ensure swap is enabled in current session"
+  ansible.builtin.shell: |
+                                       if [ -f /mnt/swapfile ]; then
+                                           swapon /mnt/swapfile
+                                       else
+                                           # Execute the script to create swap immediately
+                                           /var/lib/cloud/scripts/per-boot/create_swapfile.sh
+                                       fi
+  register:                            swap_enabled
+  changed_when:                        "'swapfile already in use' not in swap_enabled.stderr"
+  failed_when:                         false
+
+- name:                                "1.1 Swap (cloud-init): - Verify swap is active"
+  ansible.builtin.shell:               swapon -s
+  register:                            swap_status
+  changed_when:                        false
+
+- name:                                "1.1 Swap (cloud-init): - Debug swap status"
+  ansible.builtin.debug:
+    msg:                               "Swap status: {{ swap_status.stdout }}"
+    verbosity:                         1
+
+...

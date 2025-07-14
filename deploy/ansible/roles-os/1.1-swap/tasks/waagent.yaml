@@ -1,0 +1,81 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+---
+# -------------------------------------+---------------------------------------8
+#
+# Task: waagent-based swap configuration
+#
+# -------------------------------------+---------------------------------------8
+
+- name:                                "1.1 Swap (waagent): - Check for waagent.conf"
+  ansible.builtin.stat:
+    path:                              /etc/waagent.conf
+  register:                            waagent_conf
+
+- name:                                "1.1 Swap (waagent): - Check for waagent.conf.rpmsave"
+  become:                              true
+  become_user:                         root
+  ansible.builtin.stat:
+    path:                              /etc/waagent.conf.rpmsave
+  register:                            waagent_conf_save
+
+- name:                                "1.1 Swap (waagent): - Copy the conf file from rpmsave"
+  become:                              true
+  become_user:                         root
+  ansible.builtin.copy:
+    remote_src:                        true
+    src:                               /etc/waagent.conf.rpmsave
+    dest:                              /etc/waagent.conf
+    mode:                              preserve
+  when:
+    - not waagent_conf.stat.exists
+    - waagent_conf_save.stat.exists
+  register:                            waagent_conf_copy
+
+- name:                                "1.1 Swap (waagent): - Force systemd to reread configs"
+  ansible.builtin.service:
+    name:                              systemd
+    state:                             reloaded
+  when:
+    - waagent_conf_copy is defined
+    - waagent_conf_copy.changed
+
+- name:                                "1.1 Swap (waagent): - Restart WAAgent after config copy"
+  ansible.builtin.service:
+    name:                              waagent
+    state:                             restarted
+  when:
+    - waagent_conf_copy is defined
+    - waagent_conf_copy.changed
+
+    # Default values on install
+    #     ResourceDisk.Format             = y
+    #     ResourceDisk.Filesystem         = ext4
+    #     ResourceDisk.MountPoint         = /mnt/resource
+    #     ResourceDisk.EnableSwap         = n
+    #     ResourceDisk.SwapSizeMB         = 0
+    #     ResourceDisk.MountOptions       = None
+- name:                                "1.1 Swap (waagent): - Configure waagent with proper parameters"
+  ansible.builtin.lineinfile:
+    dest:                              /etc/waagent.conf
+    state:                             "{{ item.state }}"
+    regexp:                            "{{ item.regexp }}"
+    line:                              "{{ item.line }}"
+    backup:                            true
+  loop:
+    - { state: 'present',  regexp: 'ResourceDisk.Format=',               line: 'ResourceDisk.Format=y'                                    }
+    - { state: 'present',  regexp: 'ResourceDisk.EnableSwap=',           line: 'ResourceDisk.EnableSwap=y'                                }
+    - { state: 'present',  regexp: 'ResourceDisk.SwapSizeMB=',           line: 'ResourceDisk.SwapSizeMB={{ target_swap_size_mb }}'       }
+    - { state: 'present',  regexp: 'ResourceDisk.MountPoint=',           line: 'ResourceDisk.MountPoint=/mnt'                             }
+    - { state: 'present',  regexp: 'AutoUpdate.Enabled=',                line: 'AutoUpdate.Enabled=y'                                     }
+    - { state: 'present',  regexp: 'AutoUpdate.UpdateToLatestVersion=',  line: 'AutoUpdate.UpdateToLatestVersion=y'                       }
+    - { state: 'present',  regexp: 'Extensions.WaitForCloudInit=',       line: 'Extensions.WaitForCloudInit=y'                            }
+  register:                            waagent_configuration
+  notify:                              "Swap reboot"
+
+- name:                                "1.1 Swap (waagent): - Restart WAAgent after configuration"
+  ansible.builtin.service:
+    name:                              waagent
+    state:                             restarted
+  when:                                waagent_configuration.changed

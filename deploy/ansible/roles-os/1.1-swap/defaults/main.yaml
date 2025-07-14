@@ -9,3 +9,12 @@
 distro_name:    "{{ ansible_distribution | upper }}-{{ ansible_distribution_major_version }}"
 distribution_id:      "{{ ansible_distribution | lower ~ ansible_distribution_major_version }}"
 distribution_full_id: "{{ ansible_distribution | lower ~ ansible_distribution_version }}"
+
+# Swap configuration method: 'waagent' or 'cloud-init'
+swap_config_type: "cloud-init"
+
+# Default swap size in MB (can be overridden by sap_swap variable)
+default_swap_size_mb: 2048
+
+# Whether to use fallocate or dd for cloud-init swap file creation
+use_fallocate: true
