@@ -271,6 +271,7 @@ resource "local_file" "sap-parameters_yml" {
                                             true) : (
                                             false
                                           )
+              swap_config_type            = var.infrastructure.swap_config_type
 
     }
   )

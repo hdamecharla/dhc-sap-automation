@@ -176,6 +176,11 @@ secret_prefix:                 ${secret_prefix}
 # Set to true to instruct Ansible to update all the packages on the virtual machines
 upgrade_packages:              ${upgrade_packages}
 
+# Swap configuration type
+# valid values are: waagent, cloud-init
+swap_config_type:              ${swap_config_type}
+
+# Additional/Override configuration settings for the SAP system
 ${settings}
 
 #############################################################################
