@@ -232,13 +232,13 @@
     verbosity:                         1
 
 # Rebuild initramfs if needed
-- name:                                "1.5.4 NVMe Support (RHEL) - Rebuild initramfs with dracut"
+- name:                                "1.5.4 NVMe Support (RHEL/OL) - Rebuild initramfs with dracut"
   when:                                dracut_conf_added.changed
   ansible.builtin.command:             dracut -f -v
   register:                            initramfs_rebuilt
 
 # Install udev rules for Azure NVMe disks
-- name:                                "1.5.4 NVMe Support (SUSE) - Create Azure NVMe LUN calculation helper script"
+- name:                                "1.5.4 NVMe Support (RHEL/OL) - Create Azure NVMe LUN calculation helper script"
   ansible.builtin.copy:
     src:                               88-azure-nvme-lun-calc
     dest:                              /usr/local/bin/azure-nvme-lun-calc
@@ -248,7 +248,7 @@
     force:                             true
   register:                            helper_script_created
 
-- name:                                "1.5.4 NVMe Support (RHEL) - Install udev rules for Azure NVMe disks"
+- name:                                "1.5.4 NVMe Support (RHEL/OL) - Install udev rules for Azure NVMe disks"
   ansible.builtin.copy:
     src:                               88-azure-nvme-data-disk.rules
     dest:                              /usr/lib/udev/rules.d/88-azure-data-disk.rules
@@ -258,17 +258,17 @@
     mode:                              '0644'
   register:                            udev_rules_added
 
-- name:                                "1.5.4 NVMe Support (RHEL) - Reload udev rules"
+- name:                                "1.5.4 NVMe Support (RHEL/OL) - Reload udev rules"
   when:                                udev_rules_added.changed
   ansible.builtin.command:             udevadm control --reload-rules
   register:                            udev_rules_reloaded
 
-- name:                                "1.5.4 NVMe Support (RHEL) - Trigger udev rules for existing devices"
+- name:                                "1.5.4 NVMe Support (RHEL/OL) - Trigger udev rules for existing devices"
   when:                                udev_rules_added.changed
   ansible.builtin.command:             udevadm trigger
   register:                            udev_triggered
 
-- name:                                "1.5.4 NVMe Support (RHEL) - Verify udev rules are applied"
+- name:                                "1.5.4 NVMe Support (RHEL/OL) - Verify udev rules are applied"
   when:                                udev_rules_added.changed
   ansible.builtin.shell: |
                                        set -o pipefail
@@ -277,7 +277,7 @@
   failed_when:                         false
   changed_when:                        false
 
-- name:                                "1.5.4 NVMe Support (RHEL) - Display udev verification results"
+- name:                                "1.5.4 NVMe Support (RHEL/OL) - Display udev verification results"
   when:
                                        - udev_rules_added.changed
                                        - udev_verification is defined
@@ -286,7 +286,7 @@
     msg:                               "Udev configuration verification on RHEL: {{ 'Successful - Azure disk symlinks detected' if 'disk/azure' in udev_verification.stdout else 'Note: No Azure disk symlinks detected (normal for systems without data disks)' }}"
     verbosity:                         1
 
-- name:                                "1.5.4 NVMe Support (RHEL) - Set final RHEL configuration facts"
+- name:                                "1.5.4 NVMe Support (RHEL/OL) - Set final RHEL configuration facts"
   ansible.builtin.set_fact:
     nvme_rhel_configured:              true
     nvme_udev_rules_installed:         "{{ udev_rules_added.changed | default(false) }}"
