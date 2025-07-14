@@ -1,0 +1,45 @@
+{# Copyright (c) Microsoft Corporation.
+ # Licensed under the MIT License.
+#}
+#!/bin/sh
+# Cloud-init swap file creation script
+# This script is executed on every boot to ensure swap is available
+
+SWAP_FILE="/mnt/swapfile"
+SWAP_SIZE_MB="{{ target_swap_size_mb | default(default_swap_size_mb) }}"
+
+echo "Starting swap configuration - Target size: ${SWAP_SIZE_MB}MB"
+
+if [ ! -f "$SWAP_FILE" ]; then
+    echo "Creating swap file of size ${SWAP_SIZE_MB}MB"
+
+{% if use_fallocate | default(true) %}
+    # Use fallocate for faster allocation
+    fallocate --length ${SWAP_SIZE_MB}M $SWAP_FILE
+    if [ $? -ne 0 ]; then
+        echo "fallocate failed, falling back to dd"
+        dd if=/dev/zero of=$SWAP_FILE bs=1M count=${SWAP_SIZE_MB}
+    fi
+{% else %}
+    # Use dd method (more compatible but slower)
+    dd if=/dev/zero of=$SWAP_FILE bs=1M count=${SWAP_SIZE_MB}
+{% endif %}
+
+    chmod 600 $SWAP_FILE
+    mkswap $SWAP_FILE
+    swapon $SWAP_FILE
+
+    # Add to fstab if not already present
+    if ! grep -q "$SWAP_FILE" /etc/fstab; then
+        echo "$SWAP_FILE none swap sw,nofail 0 0" >> /etc/fstab
+    fi
+
+    echo "Swap file created and enabled"
+else
+    echo "Swap file exists, enabling it"
+    swapon $SWAP_FILE 2>/dev/null || echo "Swap file already active"
+fi
+
+# Verify swap is active
+echo "Current swap status:"
+swapon -s
