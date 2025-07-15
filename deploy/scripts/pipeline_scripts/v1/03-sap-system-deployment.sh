@@ -61,6 +61,17 @@ if [[ ! -f /etc/profile.d/deploy_server.sh ]]; then
 	configureNonDeployer "${tf_version:-1.12.2}"
 fi
 
+echo -e "$green--- Check if logged in to Azure ---$reset"
+# Check if running on deployer
+echo -e "$green--- az login ---$reset"
+LogonToAzure $USE_MSI
+return_code=$?
+if [ 0 != $return_code ]; then
+	echo -e "$bold_red--- Login failed ---$reset"
+	echo "##vso[task.logissue type=error]az login failed."
+	exit $return_code
+fi
+
 if az account show --query name; then
 	echo -e "$green--- Already logged in to Azure ---$reset"
 else
